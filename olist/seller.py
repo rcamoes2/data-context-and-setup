@@ -163,6 +163,47 @@ class Seller:
 
         return res
         # $CHALLENGIFY_END
+    def get_revenues(self):
+        """
+        Returns a DataFrame with:
+        'seller_id', 'revenues'
+        """
+        df = self.get_sales()
+        #revenues are taken 10% from sales and 80BRL from subscription
+        df['revenues'] = df['sales'] * 0.1 + 80
+        #drop duplicates
+        df = df.reset_index().drop_duplicates(subset='seller_id', keep='first')
+        return df
+
+
+    def get_cost_of_reviews(self):
+        """
+        Returns a DataFrame with:
+        'seller_id', 'cost_of_reviews'
+        """
+        df = self.get_review_score()
+        #cost of reviews is based on review score
+        # review_score: cost(BRL)
+        #{'1 star': 100
+        #'2 stars': 50
+        #'3 stars': 40
+        #'4 stars': 0
+        #'5 stars': 0}
+        df['cost_of_reviews'] = df['review_score'].apply(lambda x: 100 if x == 1 else 50 if x == 2 else 40 if x == 3 else 0)
+        #return only seller_id and cost_of_reviews
+        df = df[['seller_id', 'cost_of_reviews']]
+        return df
+
+    def get_profits(self):
+        """
+        Returns a DataFrame with:
+        'seller_id', 'profits', 'revenues', 'cost_of_reviews'
+        """
+        df = self.get_revenues().merge(self.get_cost_of_reviews(), on='seller_id')
+        df['profits'] = df['revenues'] - df['cost_of_reviews']
+        df = df.drop('sales', axis=1)
+        return df
+
 
     def get_training_data(self):
         """
@@ -171,6 +212,10 @@ class Seller:
         'wait_time', 'date_first_sale', 'date_last_sale', 'months_on_olist', 'share_of_one_stars',
         'share_of_five_stars', 'review_score', 'n_orders', 'quantity',
         'quantity_per_order', 'sales']
+        Edit the get_training_data method so that the DataFrame it returns contains the fields:
+        revenues: sum of subscription and sales fees revenues
+        cost_of_reviews: sum of costs associated with bad reviews
+        profits: revenues - cost_of_reviews
         """
 
         training_set =\
@@ -183,13 +228,105 @@ class Seller:
                 self.get_quantity(), on='seller_id'
                ).merge(
                 self.get_sales(), on='seller_id'
+               ).merge(
+                self.get_profits(), on='seller_id'
                )
+
 
         if self.get_review_score() is not None:
             training_set = training_set.merge(self.get_review_score(),
                                               on='seller_id')
 
+
         return training_set
 
-seller = Seller().get_training_data()
-print(seller.shape)
+
+    '''creating a method that will:
+        1. get the training data
+        2. we will be using the following columns: seller_id, profits, IT_costs, sum_of_profits
+        3. we will select the negative profits sellers and delete them
+        4. we will create a sub-method that will have as input the seller_id and delete the seller from the dataframe
+        5. we will update the IT_costs, profits, sum_of_profits columns to reflect the impact of the seller's deletion
+        6. we will return the updated dataframe
+    '''
+    def get_products(self):
+        """
+        Returns a DataFrame with:
+        'seller_id', 'n_products'
+        """
+        prod = pd.DataFrame
+        prod = self.data['order_items'][['seller_id', 'product_id']].drop_duplicates()
+
+        return prod
+
+    def get_updated_training_data(self,
+                                  iter=None,
+                                  sell_id=None,
+                                  maximize=False):
+        alpha = 3157.27
+        beta = 978.23
+        #IT_costs = alpha * sqrt(number of sellers) + beta * sqrt(number of products)
+        df = self.get_training_data().copy()
+        df['IT_costs'] = alpha * np.sqrt(df['seller_id'].nunique()) + beta * np.sqrt(df['n_orders'].nunique())
+        df['sum_of_profits'] = sum(df['profits'])
+        df['seller_id'] = df['seller_id'].astype(str)
+
+        #drop all columns except: seller_id, profits, IT_costs, sum_of_profits
+        df = df[['seller_id', 'profits', 'IT_costs', 'sum_of_profits']]
+        #sort by profits
+        df = df.sort_values(by='profits', ascending=True)
+
+        if iter is not None:
+            while iter > 0:
+                #select the seller with the lowest profits
+                seller_to_sell = df[df['profits'] == min(df['profits'])]['seller_id'].values[0]
+                #delete the seller from the dataframe
+                df = df[df['seller_id'] != seller_to_sell]
+                #update the IT_costs, profits, sum_of_profits columns to reflect the impact of the seller's deletion
+                df['IT_costs'] = alpha * np.sqrt(df['seller_id'].nunique()) + beta * np.sqrt(self.get_products()['product_id'].nunique())
+                df['sum_of_profits'] = sum(df['profits'])
+
+                iter -= 1
+
+        if sell_id is not None:
+            #delete the seller from the dataframe
+            df = df[df['seller_id'] != sell_id]
+            #update the IT_costs, profits, sum_of_profits columns to reflect the impact of the seller's deletion
+            df['IT_costs'] = alpha * np.sqrt(df['seller_id'].nunique()) + beta * np.sqrt(self.get_products()['product_id'].nunique())
+            df['sum_of_profits'] = sum(df['profits'])
+            return df
+
+
+
+        if maximize == True:
+            #we want to know how many sellers should be deleted to maximize the sum of profits
+            #we will use a for loop to delete one seller at a time and see how the sum of profits changes
+            #as long as the sum of profits increased from the previous iteration, we will continue deleting sellers
+            #select the seller with the lowest profits, then delete the seller from the dataframe
+            #delta is the difference between the sum of profits from the previous iteration and the current iteration
+            total_profit = sum(df['profits']) - df['IT_costs']
+            delta = 1
+            previous_sum_of_profits = sum(df['profits'])
+            list_of_deltas, list_of_sops, list_of_nos, list_of_delsellers = [], [], [], []
+            while delta > 0:
+                previous_sum_of_profits = sum(df['profits'])
+                seller_to_sell = df[df['profits'] == min(df['profits'])]['seller_id'].values[0]
+                df = df[df['seller_id'] != seller_to_sell]
+                df['IT_costs'] = alpha * np.sqrt(df['seller_id'].nunique()) + beta * np.sqrt(self.get_products()['product_id'].nunique())
+                df['sum_of_profits'] = sum(df['profits']) - df['IT_costs']
+                delta = sum(df['profits']) - previous_sum_of_profits
+                #store delta in a list
+                #store the sum of profits in a list
+                #store the number of sellers in a list
+                #store the number of sellers that should be deleted in a list
+                list_of_deltas.append(delta)
+                list_of_sops.append(sum(df['profits']))
+                list_of_nos.append(df['seller_id'].nunique())
+                list_of_delsellers.append(seller_to_sell)
+
+
+            return df, list_of_deltas, list_of_sops, list_of_nos, list_of_delsellers
+        return df
+
+#testing new methods
+#creating an instance of the class
